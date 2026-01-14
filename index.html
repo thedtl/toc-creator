@@ -40,6 +40,7 @@
     .status-box.error { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
 
     .chapter-row { display: flex; gap: 8px; align-items: center; background: #fff; border: 1px solid var(--border); padding: 8px; border-radius: 6px; margin-bottom: 8px; }
+    .chapter-row.invalid { border-color: #fca5a5; background: #fef2f2; }
     .drag-handle { cursor: grab; color: #94a3b8; padding: 0 5px; }
     .ch-title { flex: 1; margin-bottom: 0; }
     .ch-page { width: 70px !important; margin-bottom: 0; text-align: center; }
@@ -221,6 +222,7 @@
         if (skipBookmarks) formData.append("skip_bookmarks", "true");
         if (scanEnd) formData.append("scan_from_end", "true");
 
+        // Prefer URL if available
         if (source === 'url' && url) {
             formData.append("pdf_url", url);
         } else {
@@ -230,7 +232,19 @@
 
         try {
             const res = await fetch(`${BACKEND_URL}/analyze-pdf-ai`, { method: "POST", body: formData });
-            if (!res.ok) throw new Error("Backend Error: " + res.status);
+            
+            // ERROR HANDLING: If the backend fails, parse the message
+            if (!res.ok) {
+                const errText = await res.text();
+                let errMessage = `Backend Error (${res.status})`;
+                try {
+                    // Try to parse JSON error message
+                    const errJson = JSON.parse(errText);
+                    if (errJson.detail) errMessage = errJson.detail;
+                    if (errJson.error) errMessage = errJson.error;
+                } catch(e) {}
+                throw new Error(errMessage);
+            }
             
             const data = await res.json();
             if (data.error) throw new Error(data.error);
@@ -249,7 +263,7 @@
         } catch (e) {
             console.error("AI Error:", e);
             statusEl.className = "status-box error";
-            statusEl.textContent = "AI Analysis failed (You can still add chapters manually).";
+            statusEl.textContent = "AI Analysis failed: " + e.message;
             ["step-chapters", "step-download"].forEach(id => $(id).classList.remove("hidden"));
         }
     }
@@ -429,7 +443,7 @@
     document.addEventListener("DOMContentLoaded", () => {
         checkBackend();
         
-        // --- FIXED FILE HANDLER ---
+        // --- FIXED FILE HANDLER (SINGLE SOURCE OF TRUTH) ---
         $("pdf-file").addEventListener('change', async function(e) {
             const file = e.target.files[0];
             if (!file) return;
