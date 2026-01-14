@@ -162,7 +162,8 @@
 
     // --- State ---
     let pdfDoc = null;
-    let pdfBytes = null;
+    let pdfBytes = null; // Used for client-side editing
+    let pdfBlob = null;  // Used for sending to AI
     let totalPages = 0;
     let currentPage = 1;
 
@@ -187,24 +188,29 @@
             return;
         }
 
-        // Store raw bytes for client-side processing
-        pdfBytes = data;
-        
+        // 1. SAVE COPIES IMMEDIATELY (Fix for detached buffers)
+        // We create a fresh Blob for the AI
+        pdfBlob = new Blob([data], { type: "application/pdf" });
+        // We keep the ArrayBuffer for client-side editing
+        // We slice() it to ensure we have a clean copy that PDF.js won't detach
+        pdfBytes = data.slice(0); 
+
         try {
-            // Load PDF for Preview
-            const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(data) });
+            // 2. Load Preview
+            // Pass a view so the original buffer remains safe
+            const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(data.slice(0)) });
             pdfDoc = await loadingTask.promise;
             totalPages = pdfDoc.numPages;
             
+            // 3. UI Updates
             $("file-info").textContent = `✓ Loaded: ${name} (${totalPages} pages)`;
             $("file-info").classList.remove("hidden");
             $("url-error").classList.add("hidden");
             $("output-filename").value = name.replace(/\.pdf$/i, "") + " (bookmarked).pdf";
-            
             $("step-preview").classList.remove("hidden");
             renderPreview(1);
             
-            // Start AI analysis
+            // 4. Run Analysis
             await runAiAnalysis(false, false, source, url);
         } catch (e) {
             console.error("PDF Load Error:", e);
@@ -224,18 +230,16 @@
         if (skipBookmarks) formData.append("skip_bookmarks", "true");
         if (scanEnd) formData.append("scan_from_end", "true");
 
-        // Prefer URL if available
         if (source === 'url' && url) {
             formData.append("pdf_url", url);
         } else {
-            // Ensure pdfBytes exists
-            if (!pdfBytes) {
+            // Use the safe global blob we created during load
+            if (!pdfBlob || pdfBlob.size === 0) {
                 statusEl.className = "status-box error";
-                statusEl.textContent = "Error: PDF data not found.";
+                statusEl.textContent = "Error: PDF data lost. Please re-select file.";
                 return;
             }
-            const blob = new Blob([pdfBytes], { type: "application/pdf" });
-            formData.append("pdf_file", blob, "doc.pdf");
+            formData.append("pdf_file", pdfBlob, "doc.pdf");
         }
 
         try {
@@ -286,6 +290,7 @@
             statusEl.textContent = "Processing PDF in browser...";
 
             const { PDFDocument } = PDFLib;
+            // Use safe copy
             const pdfDocWrite = await PDFDocument.load(pdfBytes);
             
             const rows = document.querySelectorAll(".chapter-row");
@@ -449,13 +454,11 @@
     document.addEventListener("DOMContentLoaded", () => {
         checkBackend();
         
-        // --- ONLY ONE EVENT LISTENER FOR FILE UPLOAD ---
         $("pdf-file").addEventListener('change', async function(e) {
             const file = e.target.files[0];
             if (!file) return;
             
             try {
-                // Clear errors
                 $("url-error").classList.add("hidden");
                 $("file-info").textContent = "Loading file...";
                 $("file-info").classList.remove("hidden");
