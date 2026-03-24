@@ -121,6 +121,28 @@
     let pdfDoc = null, pdfBytes = null, pdfBlob = null, totalPages = 0, currentPage = 1;
     const $ = id => document.getElementById(id);
 
+    function normalizeDropboxUrl(url) {
+        try {
+            const u = new URL(url);
+            // Only touch dropbox.com / dropboxusercontent.com URLs
+            if (!u.hostname.includes("dropbox.com")) return url;
+            // Force raw download: set dl=1
+            u.searchParams.set("dl", "1");
+            // Remove the preview-only "raw" param if present
+            u.searchParams.delete("raw");
+            return u.toString();
+        } catch (e) {
+            return url;
+        }
+    }
+
+    function isHtmlResponse(buf) {
+        // Check the first few bytes for "<!DOCTYPE" or "<html"
+        const head = new Uint8Array(buf, 0, Math.min(50, buf.byteLength));
+        const str = String.fromCharCode(...head).trim().toLowerCase();
+        return str.startsWith("<!doctype") || str.startsWith("<html");
+    }
+
     async function checkBackend() {
         try {
             const res = await fetch(`${BACKEND_URL}/health`);
@@ -369,20 +391,28 @@
         });
 
         $("load-url-btn").onclick = async () => {
-            const url = $("pdf-url").value.trim();
-            if (!url) return;
+            const rawUrl = $("pdf-url").value.trim();
+            if (!rawUrl) return;
+            const url = normalizeDropboxUrl(rawUrl);
             $("file-info").textContent = "Downloading...";
             $("file-info").classList.remove("hidden");
             try {
                 const res = await fetch(`${WORKER_URL}?url=${encodeURIComponent(url)}`);
-                if (!res.ok) throw new Error("Download Failed");
+                if (!res.ok) throw new Error("Download Failed (" + res.status + ")");
+                const contentType = res.headers.get("content-type") || "";
                 const buf = await res.arrayBuffer();
+                // Guard: if the response is HTML, the URL didn't resolve to a PDF
+                if (contentType.includes("text/html") || isHtmlResponse(buf)) {
+                    throw new Error("Got an HTML page instead of a PDF. Check that the Dropbox link is a direct file link (not a folder or preview page).");
+                }
                 let name = "doc.pdf";
-                try { name = decodeURIComponent(new URL(url).pathname.split("/").pop()); } catch(e){}
+                try { name = decodeURIComponent(new URL(rawUrl).pathname.split("/").pop()); } catch(e){}
+                if (!name.toLowerCase().endsWith(".pdf")) name += ".pdf";
                 loadPdf(buf, name, 'url', url);
             } catch (e) {
                 $("url-error").textContent = e.message;
                 $("url-error").classList.remove("hidden");
+                $("file-info").classList.add("hidden");
             }
         };
 
